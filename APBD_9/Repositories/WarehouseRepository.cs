@@ -11,76 +11,97 @@ public class WarehouseRepository : IWarehouseRepository
     {
         _connectionString = configuration.GetConnectionString("db-mssql");
     }
-    public async Task<int> DodajProduktAsync(WarehouseDataE filter, CancellationToken cancellationToken)
-    {
+    public async Task<bool> ProductExistsAsync(int ProductId, CancellationToken cancellationToken)
+    { 
+        await using var con = new SqlConnection(_connectionString);
+        await con.OpenAsync(cancellationToken); 
+        await using var com = new SqlCommand("SELECT 1 FROM Product WHERE IdProduct = @id", con);
+        com.Parameters.AddWithValue("@id", ProductId); 
+        return await com.ExecuteScalarAsync(cancellationToken) != null;
+    }
+    public async Task<bool> WarehouseExistsAsync(int WarehouseId, CancellationToken cancellationToken) 
+    { 
+        await using var con = new SqlConnection(_connectionString);
+        await con.OpenAsync(cancellationToken); 
+        await using var com = new SqlCommand("SELECT 1 FROM Warehouse WHERE IdWarehouse = @id", con); 
+        com.Parameters.AddWithValue("@id", WarehouseId); 
+        return await com.ExecuteScalarAsync(cancellationToken) != null;
+    }
+    public async Task<Order?> GetOrderAsync(int ProductId, int Amount, DateTime CreatedAt, CancellationToken cancellationToken) 
+    { 
+        await using var con = new SqlConnection(_connectionString);
+        await con.OpenAsync(cancellationToken); 
+        await using var com = new SqlCommand(@"SELECT TOP 1 IdOrder, IdProduct, Amount, CreatedAt, FulfilledAt 
+            FROM [Order]
+            WHERE IdProduct = @pid AND Amount = @amount AND CreatedAt < @createdAt", con); 
+        com.Parameters.AddWithValue("@pid", ProductId); 
+        com.Parameters.AddWithValue("@amount", Amount); 
+        com.Parameters.AddWithValue("@createdAt", CreatedAt);
+        await using var reader = await com.ExecuteReaderAsync(cancellationToken); 
+        if (await reader.ReadAsync(cancellationToken)) 
+        { 
+            return new Order 
+            { 
+                IdOrder = reader.GetInt32(reader.GetOrdinal("IdOrder")), 
+                IdProduct = reader.GetInt32(reader.GetOrdinal("IdProduct")), 
+                Amount = reader.GetInt32(reader.GetOrdinal("Amount")), 
+                CrearedAt = reader.GetDateTime(reader.GetOrdinal("CreatedAt")),
+                FulfilledAt = reader.IsDBNull(reader.GetOrdinal("FulfilledAt")) ? (DateTime?)null : reader.GetDateTime(reader.GetOrdinal("FulfilledAt"))
+            };
+        } 
+        return null;
+        }
+    public async Task<bool> OrderFulfilledAsync(int OrderId, CancellationToken cancellationToken) 
+    { 
+        await using var con = new SqlConnection(_connectionString);
+        await con.OpenAsync(cancellationToken); 
+        await using var com = new SqlCommand("SELECT 1 FROM Product_Warehouse WHERE IdOrder = @id", con); 
+        com.Parameters.AddWithValue("@id", OrderId); 
+        return await com.ExecuteScalarAsync(cancellationToken) != null;
+    }
+    public async Task<Product?> GetProductByIdAsync(int ProductId, CancellationToken cancellationToken) 
+    { 
+        await using var con = new SqlConnection(_connectionString);
+        await con.OpenAsync(cancellationToken); 
+        await using var com = new SqlCommand("SELECT IdProduct, Name, Description, Price FROM Product WHERE IdProduct = @id", con); 
+        com.Parameters.AddWithValue("@id", ProductId);
+        await using var reader = await com.ExecuteReaderAsync(cancellationToken); 
+        if (await reader.ReadAsync(cancellationToken)) 
+        { 
+            return new Product 
+            { 
+                IdProduct = reader.GetInt32(reader.GetOrdinal("IdProduct")), 
+                Name = reader.GetString(reader.GetOrdinal("Name")), 
+                Description = reader.GetString(reader.GetOrdinal("Description")), 
+                Price = reader.GetDecimal(reader.GetOrdinal("Price"))
+                
+            };
+        } 
+        return null;
+    }
+    public async Task UpdateOrderFulfilledAtAsync(int OrderId, DateTime FulfilledAt, CancellationToken cancellationToken) 
+    { 
         await using var con = new SqlConnection(_connectionString);
         await con.OpenAsync(cancellationToken);
-        var transaction = await con.BeginTransactionAsync(cancellationToken);
-        try
-        {
-            var com = new SqlCommand("SELECT 1 FROM Product WHERE IdProduct = @id", con, (SqlTransaction)transaction);
-            com.Parameters.AddWithValue("@id", filter.ProductId);
-            //1
-            if(await com.ExecuteScalarAsync(cancellationToken)==null)
-            {
-                throw new Exception("Produkt nie istnieje");
-            }
-            com = new SqlCommand("SELECT 1 FROM Warehouse WHERE IdWarehouse = @id", con, (SqlTransaction)transaction);
-            com.Parameters.AddWithValue("@id", filter.WarehouseId);
-            if (await com.ExecuteScalarAsync(cancellationToken)==null)
-                throw new Exception("Magazyn nie istnieje");
-            
-            //2
-            com = new SqlCommand(@"
-                SELECT TOP 1 * FROM [Order]
-                WHERE IdProduct = @pid AND Amount = @amount AND CreatedAt < @created", con, (SqlTransaction)transaction);
-            com.Parameters.AddWithValue("@pid", filter.ProductId);
-            com.Parameters.AddWithValue("@amount", filter.Amount);
-            com.Parameters.AddWithValue("@created", filter.CreatedAt);
-            var czy_istnieje_zamowienie = await com.ExecuteReaderAsync(cancellationToken);
-            if (!await czy_istnieje_zamowienie.ReadAsync(cancellationToken))
-            {
-                await czy_istnieje_zamowienie.CloseAsync();
-                throw new Exception("Nie znaleziono zamówienia");
-            }
-            int orderId = (int)czy_istnieje_zamowienie["IdOrder"];
-            await czy_istnieje_zamowienie.CloseAsync();
-            
-            //3
-            com = new SqlCommand("SELECT 1 FROM Product_Warehouse WHERE IdOrder = @id", con, (SqlTransaction)transaction);
-            com.Parameters.AddWithValue("@id", orderId);
-            if (await com.ExecuteScalarAsync(cancellationToken) != null)
-                throw new Exception("Zamówienie zostało już zrealizowane");
-            
-            //4
-            com = new SqlCommand("UPDATE [Order] SET FulfilledAt = GETDATE() WHERE IdOrder = @id", con, (SqlTransaction)transaction);
-            com.Parameters.AddWithValue("@id", orderId);
-            await com.ExecuteNonQueryAsync(cancellationToken);
-            
-            //5
-            com = new SqlCommand("SELECT Price FROM Product WHERE IdProduct = @id", con, (SqlTransaction)transaction);
-            com.Parameters.AddWithValue("@id", filter.ProductId);
-            decimal cena = (decimal)(await com.ExecuteScalarAsync(cancellationToken));
-            decimal calkowita_cena = cena * filter.Amount;
-            com = new SqlCommand(@"
-                INSERT INTO Product_Warehouse (IdWarehouse, IdProduct, IdOrder, Amount, Price, CreatedAt)
-                VALUES (@wid, @pid, @oid, @amount, @price, GETDATE());
-                SELECT SCOPE_IDENTITY();", con, (SqlTransaction)transaction);
-            com.Parameters.AddWithValue("@wid", filter.WarehouseId);
-            com.Parameters.AddWithValue("@pid", filter.ProductId);
-            com.Parameters.AddWithValue("@oid", orderId);
-            com.Parameters.AddWithValue("@amount", filter.Amount);
-            com.Parameters.AddWithValue("@price", calkowita_cena);
-
-            //6
-            var odpowiedz = await com.ExecuteScalarAsync(cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
-            return Convert.ToInt32(odpowiedz);
-        }
-        catch
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            throw;
-        }
+        await using var com = new SqlCommand("UPDATE [Order] SET FulfilledAt = @fulfilledAt WHERE IdOrder = @id", con); 
+        com.Parameters.AddWithValue("@id", OrderId); 
+        com.Parameters.AddWithValue("@fulfilledAt", FulfilledAt); 
+        await com.ExecuteNonQueryAsync(cancellationToken);
+    }
+    public async Task<int> AddProductToWarehouseAsync(int WarehouseId, int ProductId, int OrderId, int Amount, decimal Price, DateTime CreatedAt, CancellationToken cancellationToken) 
+    { 
+        await using var con = new SqlConnection(_connectionString);
+        await con.OpenAsync(cancellationToken);
+        await using var com = new SqlCommand(@"INSERT INTO Product_Warehouse (IdWarehouse, IdProduct, IdOrder, Amount, Price, CreatedAt)
+            VALUES (@wid, @pid, @oid, @amount, @price, @createdAt);
+            SELECT SCOPE_IDENTITY();", con);
+        com.Parameters.AddWithValue("@wid", WarehouseId); 
+        com.Parameters.AddWithValue("@pid", ProductId); 
+        com.Parameters.AddWithValue("@oid", OrderId); 
+        com.Parameters.AddWithValue("@amount", Amount); 
+        com.Parameters.AddWithValue("@price", Price); 
+        com.Parameters.AddWithValue("@createdAt", CreatedAt);
+        var wynik = await com.ExecuteScalarAsync(cancellationToken); 
+        return Convert.ToInt32(wynik);
     }
 }
