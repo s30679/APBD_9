@@ -6,5 +6,5 @@ public class Order
     public int IdProduct { get; set; }
     public int Amount { get; set; }
     public DateTime CrearedAt { get; set; }
-    public DateTime? FullfiledAt { get; set; }
+    public DateTime? FulfilledAt { get; set; }
 }
