@@ -11,4 +11,5 @@ public interface IWarehouseRepository
     Task<Product?> GetProductByIdAsync(int ProductId, CancellationToken cancellationToken);
     Task<int> AddProductToWarehouseAsync(int WarehouseId, int ProductId, int OrderId, int Amount, decimal Price, DateTime CreatedAt, CancellationToken cancellationToken);
     Task UpdateOrderFulfilledAtAsync(int OrderId, DateTime FulfilledAt, CancellationToken cancellationToken);
+    Task<int> AddProductToWarehouseByProcedureAsync(int IdProduct, int IdWarehouse, int Amount, DateTime CreatedAt, CancellationToken cancellationToken);
 }
